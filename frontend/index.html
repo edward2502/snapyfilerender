@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Docket — Word ⇄ PDF, converted properly</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #1c1b1a;
+    --paper: #fdfbf6;
+    --paper-shadow: #e8e4da;
+    --rule: #d8d3c6;
+    --amber: #c17a3d;
+    --amber-dark: #a3632c;
+    --ok: #3f7a5a;
+    --err: #b3452f;
+    --radius: 3px;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ink);
+    color: var(--paper);
+    font-family: 'Inter', sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .wrap { width: 100%; max-width: 720px; padding: 64px 24px 48px; }
+
+  header { text-align: center; margin-bottom: 8px; }
+
+  .eyebrow {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--amber);
+    margin-bottom: 14px;
+  }
+
+  h1 {
+    font-family: 'Fraunces', serif;
+    font-weight: 500;
+    font-size: clamp(32px, 6vw, 48px);
+    line-height: 1.08;
+    margin: 0 0 14px;
+    letter-spacing: -0.01em;
+  }
+
+  .sub {
+    font-size: 15px;
+    color: #a8a49a;
+    max-width: 460px;
+    margin: 0 auto 40px;
+    line-height: 1.5;
+  }
+
+  /* Mode toggle — looks like a stamped ticket switch */
+  .modes {
+    display: flex;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 0;
+    margin-bottom: 36px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+  }
+  .modes button {
+    background: transparent;
+    border: 1px solid #3a3836;
+    color: #8a867d;
+    padding: 10px 14px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+  }
+  .modes button:first-child { border-radius: var(--radius) 0 0 var(--radius); }
+  .modes button:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
+  .modes button:not(:last-child) { border-right: none; }
+  .modes button.active {
+    background: var(--amber);
+    border-color: var(--amber);
+    color: var(--ink);
+    font-weight: 500;
+  }
+  .modes button:not(.active):hover { color: var(--paper); border-color: #55524d; }
+
+  /* The sheet — a piece of paper with a folded corner */
+  .sheet {
+    position: relative;
+    background: var(--paper);
+    color: var(--ink);
+    border-radius: var(--radius);
+    box-shadow: 0 20px 50px -20px rgba(0,0,0,0.5), 0 0 0 1px var(--paper-shadow);
+    padding: 56px 32px;
+    text-align: center;
+    cursor: pointer;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+  .sheet::after {
+    content: '';
+    position: absolute;
+    top: 0; right: 0;
+    width: 0; height: 0;
+    border-style: solid;
+    border-width: 0 26px 26px 0;
+    border-color: transparent var(--ink) transparent transparent;
+    opacity: 0.06;
+  }
+  .sheet.drag { transform: translateY(-3px); box-shadow: 0 24px 60px -18px rgba(0,0,0,0.55), 0 0 0 2px var(--amber); }
+
+  .sheet .icon { font-family: 'Fraunces', serif; font-size: 42px; margin-bottom: 18px; color: var(--rule); font-weight: 500;}
+  .sheet .primary { font-size: 17px; font-weight: 500; margin-bottom: 6px; }
+  .sheet .secondary { font-size: 13px; color: #8a867d; font-family: 'IBM Plex Mono', monospace; }
+  .sheet input[type=file] { display: none; }
+
+  /* File selected state */
+  .filecard {
+    display: none;
+    background: var(--paper);
+    color: var(--ink);
+    border-radius: var(--radius);
+    box-shadow: 0 20px 50px -20px rgba(0,0,0,0.5), 0 0 0 1px var(--paper-shadow);
+    padding: 28px 32px;
+  }
+  .filecard.show { display: block; }
+  .filerow { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .filename { font-family: 'IBM Plex Mono', monospace; font-size: 13.5px; word-break: break-all; }
+  .filesize { color: #8a867d; font-size: 12px; margin-top: 3px; }
+  .clear-btn {
+    background: none; border: none; color: #8a867d; cursor: pointer;
+    font-size: 13px; text-decoration: underline; font-family: 'IBM Plex Mono', monospace;
+    flex-shrink: 0;
+  }
+  .clear-btn:hover { color: var(--err); }
+
+  .arrow { text-align: center; margin: 22px 0; color: #6b6862; font-size: 20px; }
+
+  .convert-btn {
+    width: 100%;
+    background: var(--amber);
+    color: var(--ink);
+    border: none;
+    padding: 15px;
+    font-size: 15px;
+    font-weight: 600;
+    font-family: 'Inter', sans-serif;
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  .convert-btn:hover:not(:disabled) { background: var(--amber-dark); }
+  .convert-btn:disabled { background: #4a4844; color: #8a867d; cursor: not-allowed; }
+
+  .status {
+    margin-top: 20px;
+    text-align: center;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    min-height: 20px;
+    color: #a8a49a;
+  }
+  .status.err { color: var(--err); }
+  .status.ok { color: var(--ok); }
+
+  .download-btn {
+    display: none;
+    margin-top: 14px;
+    width: 100%;
+    text-align: center;
+    background: var(--ok);
+    color: var(--paper);
+    padding: 14px;
+    border-radius: var(--radius);
+    text-decoration: none;
+    font-weight: 600;
+    font-size: 15px;
+  }
+  .download-btn.show { display: block; }
+
+  footer {
+    margin-top: 56px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: #5a574f;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">— No. 01 · Format Press —</div>
+    <h1>Word, pressed<br>into PDF. And back.</h1>
+    <p class="sub">Drop a file. Docket runs it through the press and hands you back a clean copy in the other format — nothing kept, nothing watermarked.</p>
+  </header>
+
+  <div class="modes">
+    <button id="mode-to-pdf" class="active">DOCX → PDF</button>
+    <button id="mode-to-word">PDF → DOCX</button>
+    <button id="mode-from-excel">XLSX → PDF</button>
+    <button id="mode-to-excel">PDF → XLSX</button>
+  </div>
+
+  <div class="sheet" id="dropzone">
+    <div class="icon">⎘</div>
+    <div class="primary" id="dz-primary">Drop your .docx here</div>
+    <div class="secondary" id="dz-secondary">or click to browse — up to 25MB</div>
+    <input type="file" id="fileInput" accept=".docx">
+  </div>
+
+  <div class="filecard" id="filecard">
+    <div class="filerow">
+      <div>
+        <div class="filename" id="filename"></div>
+        <div class="filesize" id="filesize"></div>
+      </div>
+      <button class="clear-btn" id="clearBtn">remove</button>
+    </div>
+  </div>
+
+  <div class="arrow" id="arrow" style="display:none">↓</div>
+
+  <button class="convert-btn" id="convertBtn" style="display:none" disabled>Convert</button>
+  <a class="download-btn" id="downloadBtn" download>Download result</a>
+  <div class="status" id="status"></div>
+
+  <footer>DOCKET · runs on your own server, your files never leave it longer than it takes to convert them</footer>
+</div>
+
+<script>
+// ---- Configure this to point at your backend ----
+const API_BASE = "http://localhost:8000"; // change to your domain in production, e.g. https://api.yourdomain.com
+// --------------------------------------------------
+
+let mode = "to-pdf"; // to-pdf | to-word | from-excel | to-excel
+let selectedFile = null;
+
+const dropzone = document.getElementById("dropzone");
+const fileInput = document.getElementById("fileInput");
+const filecard = document.getElementById("filecard");
+const filenameEl = document.getElementById("filename");
+const filesizeEl = document.getElementById("filesize");
+const clearBtn = document.getElementById("clearBtn");
+const convertBtn = document.getElementById("convertBtn");
+const downloadBtn = document.getElementById("downloadBtn");
+const statusEl = document.getElementById("status");
+const arrowEl = document.getElementById("arrow");
+const dzPrimary = document.getElementById("dz-primary");
+const dzSecondary = document.getElementById("dz-secondary");
+const modeButtons = {
+  "to-pdf": document.getElementById("mode-to-pdf"),
+  "to-word": document.getElementById("mode-to-word"),
+  "from-excel": document.getElementById("mode-from-excel"),
+  "to-excel": document.getElementById("mode-to-excel"),
+};
+
+const MODE_CONFIG = {
+  "to-pdf":     { accept: ".docx", label: "Drop your .docx here",  endpoint: "/api/to-pdf",     outExt: ".pdf"  },
+  "to-word":    { accept: ".pdf",  label: "Drop your .pdf here",   endpoint: "/api/to-word",    outExt: ".docx" },
+  "from-excel": { accept: ".xlsx", label: "Drop your .xlsx here",  endpoint: "/api/from-excel", outExt: ".pdf"  },
+  "to-excel":   { accept: ".pdf",  label: "Drop your .pdf here",   endpoint: "/api/to-excel",    outExt: ".xlsx" },
+};
+
+function setMode(newMode) {
+  mode = newMode;
+  Object.entries(modeButtons).forEach(([key, btn]) => btn.classList.toggle("active", key === mode));
+  const cfg = MODE_CONFIG[mode];
+  fileInput.accept = cfg.accept;
+  dzPrimary.textContent = cfg.label;
+  clearSelection();
+}
+
+Object.keys(modeButtons).forEach((key) => {
+  modeButtons[key].addEventListener("click", () => setMode(key));
+});
+
+dropzone.addEventListener("click", () => fileInput.click());
+dropzone.addEventListener("dragover", (e) => { e.preventDefault(); dropzone.classList.add("drag"); });
+dropzone.addEventListener("dragleave", () => dropzone.classList.remove("drag"));
+dropzone.addEventListener("drop", (e) => {
+  e.preventDefault();
+  dropzone.classList.remove("drag");
+  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener("change", (e) => {
+  if (e.target.files.length) handleFile(e.target.files[0]);
+});
+
+function handleFile(file) {
+  const expectedExt = MODE_CONFIG[mode].accept;
+  if (!file.name.toLowerCase().endsWith(expectedExt)) {
+    showStatus(`Please choose a ${expectedExt} file for this mode.`, "err");
+    return;
+  }
+  selectedFile = file;
+  filenameEl.textContent = file.name;
+  filesizeEl.textContent = formatSize(file.size);
+  filecard.classList.add("show");
+  arrowEl.style.display = "block";
+  convertBtn.style.display = "block";
+  convertBtn.disabled = false;
+  downloadBtn.classList.remove("show");
+  showStatus("");
+}
+
+function clearSelection() {
+  selectedFile = null;
+  fileInput.value = "";
+  filecard.classList.remove("show");
+  arrowEl.style.display = "none";
+  convertBtn.style.display = "none";
+  downloadBtn.classList.remove("show");
+  showStatus("");
+}
+
+clearBtn.addEventListener("click", clearSelection);
+
+function formatSize(bytes) {
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + " KB";
+  return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+}
+
+function showStatus(msg, kind) {
+  statusEl.textContent = msg;
+  statusEl.className = "status" + (kind ? " " + kind : "");
+}
+
+convertBtn.addEventListener("click", async () => {
+  if (!selectedFile) return;
+  convertBtn.disabled = true;
+  downloadBtn.classList.remove("show");
+  showStatus("Converting — this can take a few seconds…");
+
+  const cfg = MODE_CONFIG[mode];
+  const formData = new FormData();
+  formData.append("file", selectedFile);
+
+  try {
+    const resp = await fetch(API_BASE + cfg.endpoint, { method: "POST", body: formData });
+    if (!resp.ok) {
+      let msg = "Conversion failed.";
+      try { const j = await resp.json(); if (j.detail) msg = j.detail; } catch (_) {}
+      showStatus(msg, "err");
+      convertBtn.disabled = false;
+      return;
+    }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const baseName = selectedFile.name.replace(/\.(docx|pdf|xlsx)$/i, "");
+    downloadBtn.href = url;
+    downloadBtn.download = baseName + cfg.outExt;
+    downloadBtn.classList.add("show");
+    showStatus("Done — your file is ready.", "ok");
+  } catch (err) {
+    showStatus("Could not reach the server. Is the backend running?", "err");
+  } finally {
+    convertBtn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
