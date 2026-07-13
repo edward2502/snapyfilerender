@@ -201,3 +201,97 @@ def pdf_to_excel(input_path: str, output_path: str) -> str:
                 start_row += len(df) + 2
 
     return output_path
+
+
+def merge_pdfs(input_paths: list, output_path: str) -> str:
+    """Combine multiple PDFs into one, in the given order."""
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    for path in input_paths:
+        writer.append(path)
+    with open(output_path, "wb") as f:
+        writer.write(f)
+    return output_path
+
+
+def split_pdf(input_path: str, output_path: str, start_page: int, end_page: int) -> str:
+    """Extract a page range (1-indexed, inclusive) into a new PDF."""
+    from pypdf import PdfReader, PdfWriter
+
+    reader = PdfReader(input_path)
+    total_pages = len(reader.pages)
+
+    if start_page < 1 or end_page < 1:
+        raise ValueError("Page numbers must be 1 or greater.")
+    if start_page > total_pages:
+        raise ValueError(f"This PDF only has {total_pages} page(s).")
+    if end_page > total_pages:
+        end_page = total_pages
+    if start_page > end_page:
+        raise ValueError("Start page must be less than or equal to end page.")
+
+    writer = PdfWriter()
+    for i in range(start_page - 1, end_page):
+        writer.add_page(reader.pages[i])
+
+    with open(output_path, "wb") as f:
+        writer.write(f)
+    return output_path
+
+
+def compress_pdf(input_path: str, output_path: str, image_quality: int = 60, max_dimension: int = 1600) -> str:
+    """Shrink a PDF's file size by re-encoding its embedded images at a
+    lower quality/resolution and compressing internal object streams.
+    Text and vector content are left untouched - only raster images (the
+    usual cause of PDF bloat) are recompressed."""
+    import io
+    import pikepdf
+    from PIL import Image
+
+    pdf = pikepdf.open(input_path)
+
+    for page in pdf.pages:
+        if "/Resources" not in page or "/XObject" not in page.Resources:
+            continue
+        xobjects = page.Resources.XObject
+        for name in list(xobjects.keys()):
+            obj = xobjects[name]
+            if obj.get("/Subtype") != pikepdf.Name("/Image"):
+                continue
+            try:
+                pdf_image = pikepdf.PdfImage(obj)
+                pil_image = pdf_image.as_pil_image()
+            except Exception:
+                continue  # unsupported image encoding - leave it as-is
+
+            # Downscale oversized images
+            w, h = pil_image.size
+            if max(w, h) > max_dimension:
+                scale = max_dimension / max(w, h)
+                pil_image = pil_image.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
+            if pil_image.mode not in ("RGB", "L"):
+                pil_image = pil_image.convert("RGB")
+
+            buf = io.BytesIO()
+            pil_image.save(buf, format="JPEG", quality=image_quality, optimize=True)
+            buf.seek(0)
+
+            try:
+                new_image = pikepdf.PdfImage.make_image(pdf, buf.read(), pil_image.size)
+            except AttributeError:
+                # Fallback for pikepdf versions without make_image helper:
+                # replace the stream data directly with a DCTDecode (JPEG) filter.
+                obj.write(buf.getvalue(), filter=pikepdf.Name("/DCTDecode"))
+                obj.Width = pil_image.width
+                obj.Height = pil_image.height
+                obj.ColorSpace = pikepdf.Name("/DeviceRGB") if pil_image.mode == "RGB" else pikepdf.Name("/DeviceGray")
+                obj.BitsPerComponent = 8
+                continue
+
+            xobjects[name] = new_image
+
+    pdf.save(output_path, compress_streams=True, object_stream_mode=pikepdf.ObjectStreamMode.generate)
+    pdf.close()
+    return output_path
