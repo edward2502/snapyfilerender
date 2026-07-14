@@ -29,6 +29,7 @@ from fastapi.responses import FileResponse
 from converter import (
     word_to_pdf, pdf_to_word, excel_to_pdf, pdf_to_excel,
     merge_pdfs, split_pdf, compress_pdf,
+    unlock_pdf, protect_pdf, watermark_pdf,
 )
 
 APP_TMP_DIR = Path(os.environ.get("CONVERTER_TMP_DIR", "/tmp/converter_jobs"))
@@ -265,3 +266,102 @@ async def compress_pdf_endpoint(background_tasks: BackgroundTasks, file: UploadF
         output_path, media_type="application/pdf", filename=download_name,
         background=background_tasks,
     )
+
+
+@app.post("/api/unlock-pdf")
+async def unlock_pdf_endpoint(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    password: str = Form(...),
+):
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(400, "Please upload a .pdf file.")
+
+    job_dir = make_job_dir()
+    input_path = job_dir / "input.pdf"
+    output_path = job_dir / "unlocked.pdf"
+
+    await save_upload(file, input_path)
+
+    try:
+        unlock_pdf(str(input_path), str(output_path), password)
+    except ValueError as e:
+        cleanup_job_dir(job_dir)
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        cleanup_job_dir(job_dir)
+        raise HTTPException(500, f"Unlock failed: {e}")
+
+    background_tasks.add_task(cleanup_job_dir, job_dir)
+    download_name = os.path.splitext(file.filename)[0] + "_unlocked.pdf"
+    return FileResponse(
+        output_path, media_type="application/pdf", filename=download_name,
+        background=background_tasks,
+    )
+
+
+@app.post("/api/protect-pdf")
+async def protect_pdf_endpoint(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    password: str = Form(...),
+):
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(400, "Please upload a .pdf file.")
+
+    job_dir = make_job_dir()
+    input_path = job_dir / "input.pdf"
+    output_path = job_dir / "protected.pdf"
+
+    await save_upload(file, input_path)
+
+    try:
+        protect_pdf(str(input_path), str(output_path), password)
+    except ValueError as e:
+        cleanup_job_dir(job_dir)
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        cleanup_job_dir(job_dir)
+        raise HTTPException(500, f"Protect failed: {e}")
+
+    background_tasks.add_task(cleanup_job_dir, job_dir)
+    download_name = os.path.splitext(file.filename)[0] + "_protected.pdf"
+    return FileResponse(
+        output_path, media_type="application/pdf", filename=download_name,
+        background=background_tasks,
+    )
+
+
+@app.post("/api/watermark-pdf")
+async def watermark_pdf_endpoint(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    text: str = Form(...),
+    opacity: float = Form(0.3),
+    font_size: int = Form(40),
+    rotation: int = Form(45),
+):
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(400, "Please upload a .pdf file.")
+    if not text.strip():
+        raise HTTPException(400, "Watermark text cannot be empty.")
+
+    job_dir = make_job_dir()
+    input_path = job_dir / "input.pdf"
+    output_path = job_dir / "watermarked.pdf"
+
+    await save_upload(file, input_path)
+
+    try:
+        watermark_pdf(str(input_path), str(output_path), text, opacity, font_size, rotation)
+    except Exception as e:
+        cleanup_job_dir(job_dir)
+        raise HTTPException(500, f"Watermarking failed: {e}")
+
+    background_tasks.add_task(cleanup_job_dir, job_dir)
+    download_name = os.path.splitext(file.filename)[0] + "_watermarked.pdf"
+    return FileResponse(
+        output_path, media_type="application/pdf", filename=download_name,
+        background=background_tasks,
+    )
+
