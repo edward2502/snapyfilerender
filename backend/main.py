@@ -2,14 +2,23 @@
 main.py - FastAPI backend for a Word<->PDF converter website (iLovePDF-style).
 
 Endpoints:
-  POST /api/to-pdf       - upload a .docx, get back a .pdf
-  POST /api/to-word      - upload a .pdf,  get back a .docx
-  POST /api/to-excel     - upload a .pdf,  get back a .xlsx
-  POST /api/from-excel   - upload a .xlsx, get back a .pdf
-  POST /api/merge-pdf    - upload 2+ .pdf files (field "files"), get back one merged .pdf
-  POST /api/split-pdf    - upload a .pdf + start_page/end_page form fields, get back that page range as a .pdf
-  POST /api/compress-pdf - upload a .pdf, get back a smaller .pdf (images recompressed)
-  GET  /api/health       - health check
+  POST /api/to-pdf        - upload a .docx, get back a .pdf
+  POST /api/to-word       - upload a .pdf,  get back a .docx
+  POST /api/to-excel      - upload a .pdf,  get back a .xlsx
+  POST /api/from-excel    - upload a .xlsx, get back a .pdf
+  POST /api/merge-pdf     - upload 2+ .pdf files (field "files"), get back one merged .pdf
+  POST /api/split-pdf     - upload a .pdf + start_page/end_page form fields, get back that page range as a .pdf
+  POST /api/compress-pdf  - upload a .pdf, get back a smaller .pdf (images recompressed)
+  POST /api/unlock-pdf    - upload a .pdf + password form field, get back the unlocked .pdf
+  POST /api/protect-pdf   - upload a .pdf + password form field, get back a password-protected .pdf
+  POST /api/watermark-pdf - upload a .pdf + text form field, get back a watermarked .pdf
+  POST /api/generate-qr   - data (+ optional fill_color/back_color) form fields, get back a .png QR code
+  POST /api/chat-pdf      - upload a .pdf + question form field, get back {"answer": "..."} from Gemini
+  GET  /api/health        - health check
+
+Chat with PDF requires a GEMINI_API_KEY environment variable set on the
+server (get a free key at https://aistudio.google.com/apikey). Without
+it, /api/chat-pdf returns a clear 500 error rather than crashing.
 
 Files are saved to a temp job folder, converted, streamed back to the
 user, and deleted afterwards (via background task) so nothing piles up
@@ -24,12 +33,13 @@ from typing import List
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from converter import (
     word_to_pdf, pdf_to_word, excel_to_pdf, pdf_to_excel,
     merge_pdfs, split_pdf, compress_pdf,
     unlock_pdf, protect_pdf, watermark_pdf,
+    generate_qr_code, extract_pdf_text, chat_with_pdf,
 )
 
 APP_TMP_DIR = Path(os.environ.get("CONVERTER_TMP_DIR", "/tmp/converter_jobs"))
@@ -322,7 +332,7 @@ async def protect_pdf_endpoint(
         raise HTTPException(400, str(e))
     except Exception as e:
         cleanup_job_dir(job_dir)
-        raise HTTPException(500, f"Protect failed: {e}")
+        raise HTTPException(500, f"Protection failed: {e}")
 
     background_tasks.add_task(cleanup_job_dir, job_dir)
     download_name = os.path.splitext(file.filename)[0] + "_protected.pdf"
@@ -337,9 +347,6 @@ async def watermark_pdf_endpoint(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     text: str = Form(...),
-    opacity: float = Form(0.3),
-    font_size: int = Form(40),
-    rotation: int = Form(45),
 ):
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(400, "Please upload a .pdf file.")
@@ -353,7 +360,7 @@ async def watermark_pdf_endpoint(
     await save_upload(file, input_path)
 
     try:
-        watermark_pdf(str(input_path), str(output_path), text, opacity, font_size, rotation)
+        watermark_pdf(str(input_path), str(output_path), text)
     except Exception as e:
         cleanup_job_dir(job_dir)
         raise HTTPException(500, f"Watermarking failed: {e}")
@@ -365,3 +372,58 @@ async def watermark_pdf_endpoint(
         background=background_tasks,
     )
 
+
+@app.post("/api/generate-qr")
+async def generate_qr_endpoint(
+    background_tasks: BackgroundTasks,
+    data: str = Form(...),
+    fill_color: str = Form("black"),
+    back_color: str = Form("white"),
+):
+    job_dir = make_job_dir()
+    output_path = job_dir / "qrcode.png"
+
+    try:
+        generate_qr_code(data, str(output_path), fill_color=fill_color, back_color=back_color)
+    except ValueError as e:
+        cleanup_job_dir(job_dir)
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        cleanup_job_dir(job_dir)
+        raise HTTPException(500, f"QR code generation failed: {e}")
+
+    background_tasks.add_task(cleanup_job_dir, job_dir)
+    return FileResponse(
+        output_path, media_type="image/png", filename="qrcode.png",
+        background=background_tasks,
+    )
+
+
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+
+
+@app.post("/api/chat-pdf")
+async def chat_pdf_endpoint(
+    file: UploadFile = File(...),
+    question: str = Form(...),
+):
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(400, "Please upload a .pdf file.")
+
+    job_dir = make_job_dir()
+    input_path = job_dir / "input.pdf"
+
+    try:
+        await save_upload(file, input_path)
+        document_text = extract_pdf_text(str(input_path))
+        answer = chat_with_pdf(document_text, question, GEMINI_API_KEY)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        raise HTTPException(500, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Chat with PDF failed: {e}")
+    finally:
+        cleanup_job_dir(job_dir)
+
+    return JSONResponse({"answer": answer})

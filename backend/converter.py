@@ -240,98 +240,6 @@ def split_pdf(input_path: str, output_path: str, start_page: int, end_page: int)
     return output_path
 
 
-def unlock_pdf(input_path: str, output_path: str, password: str) -> str:
-    """Remove password protection from a PDF, given the correct password."""
-    from pypdf import PdfReader, PdfWriter
-
-    reader = PdfReader(input_path)
-
-    if reader.is_encrypted:
-        result = reader.decrypt(password)
-        if result == 0:
-            raise ValueError("Incorrect password.")
-
-    writer = PdfWriter()
-    for page in reader.pages:
-        writer.add_page(page)
-
-    try:
-        if reader.metadata:
-            writer.add_metadata(reader.metadata)
-    except Exception:
-        pass
-
-    with open(output_path, "wb") as f:
-        writer.write(f)
-    return output_path
-
-
-def protect_pdf(input_path: str, output_path: str, password: str) -> str:
-    """Add password protection to a PDF."""
-    from pypdf import PdfReader, PdfWriter
-
-    if not password:
-        raise ValueError("Password cannot be empty.")
-
-    reader = PdfReader(input_path)
-    if reader.is_encrypted:
-        raise ValueError("This PDF is already password protected.")
-
-    writer = PdfWriter()
-    for page in reader.pages:
-        writer.add_page(page)
-
-    writer.encrypt(user_password=password, owner_password=None, algorithm="AES-256")
-
-    with open(output_path, "wb") as f:
-        writer.write(f)
-    return output_path
-
-
-def watermark_pdf(
-    input_path: str,
-    output_path: str,
-    text: str,
-    opacity: float = 0.3,
-    font_size: int = 40,
-    rotation: int = 45,
-) -> str:
-    """Stamp a diagonal text watermark onto every page of a PDF."""
-    import io
-    from pypdf import PdfReader, PdfWriter
-    from reportlab.pdfgen import canvas
-    from reportlab.lib.colors import Color
-
-    reader = PdfReader(input_path)
-    writer = PdfWriter()
-
-    for page in reader.pages:
-        page_width = float(page.mediabox.width)
-        page_height = float(page.mediabox.height)
-
-        buf = io.BytesIO()
-        c = canvas.Canvas(buf, pagesize=(page_width, page_height))
-        c.saveState()
-        c.translate(page_width / 2, page_height / 2)
-        c.rotate(rotation)
-        c.setFillColor(Color(0, 0, 0, alpha=opacity))
-        c.setFont("Helvetica-Bold", font_size)
-        c.drawCentredString(0, 0, text)
-        c.restoreState()
-        c.save()
-        buf.seek(0)
-
-        overlay_reader = PdfReader(buf)
-        overlay_page = overlay_reader.pages[0]
-
-        page.merge_page(overlay_page)
-        writer.add_page(page)
-
-    with open(output_path, "wb") as f:
-        writer.write(f)
-    return output_path
-
-
 def compress_pdf(input_path: str, output_path: str, image_quality: int = 60, max_dimension: int = 1600) -> str:
     """Shrink a PDF's file size by re-encoding its embedded images at a
     lower quality/resolution and compressing internal object streams.
@@ -387,3 +295,161 @@ def compress_pdf(input_path: str, output_path: str, image_quality: int = 60, max
     pdf.save(output_path, compress_streams=True, object_stream_mode=pikepdf.ObjectStreamMode.generate)
     pdf.close()
     return output_path
+
+
+def unlock_pdf(input_path: str, output_path: str, password: str) -> str:
+    """Remove password protection from a PDF, given the correct password."""
+    from pypdf import PdfReader, PdfWriter
+    from pypdf.errors import FileNotDecryptedError
+
+    reader = PdfReader(input_path)
+    if reader.is_encrypted:
+        result = reader.decrypt(password)
+        if result == 0:
+            raise ValueError("Incorrect password.")
+
+    writer = PdfWriter()
+    for page in reader.pages:
+        writer.add_page(page)
+
+    with open(output_path, "wb") as f:
+        writer.write(f)
+    return output_path
+
+
+def protect_pdf(input_path: str, output_path: str, password: str) -> str:
+    """Add password protection to a PDF."""
+    from pypdf import PdfReader, PdfWriter
+
+    if not password:
+        raise ValueError("Password cannot be empty.")
+
+    reader = PdfReader(input_path)
+    writer = PdfWriter()
+    for page in reader.pages:
+        writer.add_page(page)
+
+    writer.encrypt(user_password=password, algorithm="AES-256")
+
+    with open(output_path, "wb") as f:
+        writer.write(f)
+    return output_path
+
+
+def watermark_pdf(input_path: str, output_path: str, text: str, opacity: float = 0.3) -> str:
+    """Stamp a diagonal text watermark across every page."""
+    import io
+    from pypdf import PdfReader, PdfWriter
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.colors import Color
+
+    reader = PdfReader(input_path)
+    writer = PdfWriter()
+
+    for page in reader.pages:
+        page_width = float(page.mediabox.width)
+        page_height = float(page.mediabox.height)
+
+        buf = io.BytesIO()
+        c = canvas.Canvas(buf, pagesize=(page_width, page_height))
+        c.saveState()
+        c.translate(page_width / 2, page_height / 2)
+        c.rotate(45)
+        c.setFillColor(Color(0.5, 0.5, 0.5, alpha=opacity))
+        font_size = max(24, min(page_width, page_height) / 10)
+        c.setFont("Helvetica-Bold", font_size)
+        c.drawCentredString(0, 0, text)
+        c.restoreState()
+        c.save()
+        buf.seek(0)
+
+        watermark_reader = PdfReader(buf)
+        page.merge_page(watermark_reader.pages[0])
+        writer.add_page(page)
+
+    with open(output_path, "wb") as f:
+        writer.write(f)
+    return output_path
+
+
+def generate_qr_code(data: str, output_path: str, box_size: int = 10, fill_color: str = "black", back_color: str = "white") -> str:
+    """Generate a QR code PNG encoding the given text/URL."""
+    import qrcode
+
+    if not data or not data.strip():
+        raise ValueError("QR code content cannot be empty.")
+
+    qr = qrcode.QRCode(
+        version=None,  # auto-size to fit the data
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=box_size,
+        border=4,
+    )
+    qr.add_data(data)
+    qr.make(fit=True)
+
+    img = qr.make_image(fill_color=fill_color, back_color=back_color)
+    img.save(output_path)
+    return output_path
+
+
+def extract_pdf_text(input_path: str, max_chars: int = 100_000) -> str:
+    """Pull all text out of a PDF for use as AI context. Capped at
+    max_chars so a huge PDF can't blow past the model's context window
+    or balloon token usage on the free tier."""
+    import pdfplumber
+
+    text_parts = []
+    total_len = 0
+    with pdfplumber.open(input_path) as pdf:
+        for page in pdf.pages:
+            page_text = page.extract_text() or ""
+            text_parts.append(page_text)
+            total_len += len(page_text)
+            if total_len >= max_chars:
+                break
+
+    full_text = "\n\n".join(text_parts)
+    if len(full_text) > max_chars:
+        full_text = full_text[:max_chars] + "\n\n[... document truncated for length ...]"
+
+    if not full_text.strip():
+        raise ValueError(
+            "No text could be extracted from this PDF. It may be a scanned "
+            "image without a text layer - Chat with PDF only works on PDFs "
+            "with selectable text."
+        )
+    return full_text
+
+
+def chat_with_pdf(document_text: str, question: str, api_key: str) -> str:
+    """Answer a question about a PDF's contents using Google's Gemini API.
+    document_text should already be extracted (see extract_pdf_text) so
+    that a multi-turn conversation doesn't need to re-parse the PDF on
+    every question."""
+    from google import genai
+
+    if not question or not question.strip():
+        raise ValueError("Question cannot be empty.")
+    if not api_key:
+        raise RuntimeError(
+            "No Gemini API key configured on the server (GEMINI_API_KEY env var missing)."
+        )
+
+    client = genai.Client(api_key=api_key)
+
+    prompt = (
+        "You are answering questions about a specific document. Only use "
+        "the document text below to answer - if the answer isn't in the "
+        "document, say so clearly rather than guessing.\n\n"
+        "--- DOCUMENT START ---\n"
+        f"{document_text}\n"
+        "--- DOCUMENT END ---\n\n"
+        f"Question: {question}"
+    )
+
+    response = client.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=prompt,
+    )
+    return response.text
