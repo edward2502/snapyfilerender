@@ -14,6 +14,10 @@ Endpoints:
   POST /api/watermark-pdf - upload a .pdf + text form field, get back a watermarked .pdf
   POST /api/generate-qr   - data (+ optional fill_color/back_color) form fields, get back a .png QR code
   POST /api/chat-pdf      - upload a .pdf + question form field, get back {"answer": "..."} from Gemini
+  POST /api/img-to-pdf    - upload 1+ image files (field "files"), get back one .pdf (one image per page)
+  POST /api/pdf-to-img    - upload a .pdf + optional dpi form field, get back a .zip of one PNG per page
+  POST /api/compress-img  - upload an image + optional quality/max_dimension form fields, get back a smaller .jpg
+  POST /api/upscale-img   - upload an image + optional scale_factor form field (default 2.0, max 4.0), get back a larger image
   GET  /api/health        - health check
 
 Chat with PDF requires a GEMINI_API_KEY environment variable set on the
@@ -28,6 +32,7 @@ on disk.
 import os
 import uuid
 import shutil
+import zipfile
 from pathlib import Path
 from typing import List
 
@@ -40,6 +45,7 @@ from converter import (
     merge_pdfs, split_pdf, compress_pdf,
     unlock_pdf, protect_pdf, watermark_pdf,
     generate_qr_code, extract_pdf_text, chat_with_pdf,
+    images_to_pdf, pdf_to_images, compress_image, upscale_image,
 )
 
 APP_TMP_DIR = Path(os.environ.get("CONVERTER_TMP_DIR", "/tmp/converter_jobs"))
@@ -427,3 +433,142 @@ async def chat_pdf_endpoint(
         cleanup_job_dir(job_dir)
 
     return JSONResponse({"answer": answer})
+
+
+ALLOWED_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff")
+
+
+@app.post("/api/img-to-pdf")
+async def img_to_pdf_endpoint(background_tasks: BackgroundTasks, files: List[UploadFile] = File(...)):
+    if len(files) < 1:
+        raise HTTPException(400, "Please upload at least 1 image.")
+    for f in files:
+        if not f.filename.lower().endswith(ALLOWED_IMAGE_EXTS):
+            raise HTTPException(400, f"'{f.filename}' is not a supported image type.")
+
+    job_dir = make_job_dir()
+    input_paths = []
+    try:
+        for i, f in enumerate(files):
+            ext = os.path.splitext(f.filename)[1]
+            p = job_dir / f"input_{i}{ext}"
+            await save_upload(f, p)
+            input_paths.append(str(p))
+
+        output_path = job_dir / "images.pdf"
+        images_to_pdf(input_paths, str(output_path))
+    except HTTPException:
+        cleanup_job_dir(job_dir)
+        raise
+    except Exception as e:
+        cleanup_job_dir(job_dir)
+        raise HTTPException(500, f"Image to PDF failed: {e}")
+
+    background_tasks.add_task(cleanup_job_dir, job_dir)
+    return FileResponse(
+        output_path, media_type="application/pdf", filename="images.pdf",
+        background=background_tasks,
+    )
+
+
+@app.post("/api/pdf-to-img")
+async def pdf_to_img_endpoint(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    dpi: int = Form(150),
+):
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(400, "Please upload a .pdf file.")
+
+    job_dir = make_job_dir()
+    input_path = job_dir / "input.pdf"
+    images_dir = job_dir / "images"
+    images_dir.mkdir()
+
+    await save_upload(file, input_path)
+
+    try:
+        image_paths = pdf_to_images(str(input_path), str(images_dir), dpi=dpi)
+    except ValueError as e:
+        cleanup_job_dir(job_dir)
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        cleanup_job_dir(job_dir)
+        raise HTTPException(500, f"PDF to image failed: {e}")
+
+    zip_path = job_dir / "pages.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        for p in image_paths:
+            zf.write(p, arcname=os.path.basename(p))
+
+    background_tasks.add_task(cleanup_job_dir, job_dir)
+    download_name = os.path.splitext(file.filename)[0] + "_pages.zip"
+    return FileResponse(
+        zip_path, media_type="application/zip", filename=download_name,
+        background=background_tasks,
+    )
+
+
+@app.post("/api/compress-img")
+async def compress_img_endpoint(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    quality: int = Form(60),
+    max_dimension: int = Form(None),
+):
+    if not file.filename.lower().endswith(ALLOWED_IMAGE_EXTS):
+        raise HTTPException(400, "Please upload a supported image file.")
+
+    job_dir = make_job_dir()
+    ext = os.path.splitext(file.filename)[1]
+    input_path = job_dir / f"input{ext}"
+    output_path = job_dir / "compressed.jpg"
+
+    await save_upload(file, input_path)
+
+    try:
+        compress_image(str(input_path), str(output_path), quality=quality, max_dimension=max_dimension)
+    except Exception as e:
+        cleanup_job_dir(job_dir)
+        raise HTTPException(500, f"Image compression failed: {e}")
+
+    background_tasks.add_task(cleanup_job_dir, job_dir)
+    download_name = os.path.splitext(file.filename)[0] + "_compressed.jpg"
+    return FileResponse(
+        output_path, media_type="image/jpeg", filename=download_name,
+        background=background_tasks,
+    )
+
+
+@app.post("/api/upscale-img")
+async def upscale_img_endpoint(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    scale_factor: float = Form(2.0),
+):
+    if not file.filename.lower().endswith(ALLOWED_IMAGE_EXTS):
+        raise HTTPException(400, "Please upload a supported image file.")
+
+    job_dir = make_job_dir()
+    ext = os.path.splitext(file.filename)[1]
+    input_path = job_dir / f"input{ext}"
+    output_path = job_dir / f"upscaled{ext}"
+
+    await save_upload(file, input_path)
+
+    try:
+        upscale_image(str(input_path), str(output_path), scale_factor=scale_factor)
+    except ValueError as e:
+        cleanup_job_dir(job_dir)
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        cleanup_job_dir(job_dir)
+        raise HTTPException(500, f"Image upscaling failed: {e}")
+
+    background_tasks.add_task(cleanup_job_dir, job_dir)
+    download_name = os.path.splitext(file.filename)[0] + "_upscaled" + ext
+    media_type = "image/jpeg" if ext.lower() in (".jpg", ".jpeg") else "image/png"
+    return FileResponse(
+        output_path, media_type=media_type, filename=download_name,
+        background=background_tasks,
+    )

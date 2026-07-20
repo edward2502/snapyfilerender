@@ -453,3 +453,105 @@ def chat_with_pdf(document_text: str, question: str, api_key: str) -> str:
         contents=prompt,
     )
     return response.text
+
+
+def images_to_pdf(input_paths: list, output_path: str) -> str:
+    """Combine one or more images (jpg/png/etc.) into a single PDF, one
+    image per page, in the given order."""
+    from PIL import Image
+
+    if not input_paths:
+        raise ValueError("At least one image is required.")
+
+    images = []
+    for path in input_paths:
+        img = Image.open(path)
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        images.append(img)
+
+    first, rest = images[0], images[1:]
+    first.save(output_path, save_all=True, append_images=rest)
+    return output_path
+
+
+def pdf_to_images(input_path: str, output_dir: str, dpi: int = 150, fmt: str = "png") -> list:
+    """Render every page of a PDF to a separate image file. Returns the
+    list of output file paths, one per page, in page order."""
+    import fitz
+    import os
+
+    doc = fitz.open(input_path)
+    if doc.page_count == 0:
+        raise ValueError("This PDF has no pages.")
+
+    output_paths = []
+    for i, page in enumerate(doc):
+        pix = page.get_pixmap(dpi=dpi)
+        out_path = os.path.join(output_dir, f"page_{i + 1}.{fmt}")
+        pix.save(out_path)
+        output_paths.append(out_path)
+
+    doc.close()
+    return output_paths
+
+
+def compress_image(input_path: str, output_path: str, quality: int = 60, max_dimension: int = None) -> str:
+    """Shrink an image's file size by re-encoding as JPEG at a lower
+    quality, and optionally downscaling if it exceeds max_dimension."""
+    from PIL import Image
+
+    img = Image.open(input_path)
+    if img.mode not in ("RGB", "L"):
+        img = img.convert("RGB")
+
+    if max_dimension:
+        w, h = img.size
+        if max(w, h) > max_dimension:
+            scale = max_dimension / max(w, h)
+            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
+    img.save(output_path, format="JPEG", quality=quality, optimize=True)
+    return output_path
+
+
+def upscale_image(input_path: str, output_path: str, scale_factor: float = 2.0) -> str:
+    """Increase an image's resolution using high-quality Lanczos
+    resampling plus a mild sharpening pass. Note: this is classic
+    upscaling, not AI super-resolution - it enlarges cleanly without
+    introducing artifacts, but it cannot invent detail that was never in
+    the original image."""
+    from PIL import Image, ImageFilter
+
+    if scale_factor <= 1.0:
+        raise ValueError("Scale factor must be greater than 1.0 to upscale.")
+    if scale_factor > 4.0:
+        raise ValueError("Scale factor cannot exceed 4x (to keep processing time and file size reasonable).")
+
+    img = Image.open(input_path)
+    if img.mode not in ("RGB", "L", "RGBA"):
+        img = img.convert("RGB")
+
+    w, h = img.size
+    new_size = (int(w * scale_factor), int(h * scale_factor))
+
+    # Cap absolute output size to avoid runaway memory use on huge inputs
+    max_total_pixels = 40_000_000  # ~40MP
+    if new_size[0] * new_size[1] > max_total_pixels:
+        raise ValueError(
+            f"Requested output size ({new_size[0]}x{new_size[1]}) is too large. "
+            "Try a smaller scale factor or a smaller source image."
+        )
+
+    upscaled = img.resize(new_size, Image.LANCZOS)
+    sharpened = upscaled.filter(ImageFilter.UnsharpMask(radius=2, percent=60, threshold=2))
+
+    save_kwargs = {}
+    fmt = (img.format or "PNG").upper()
+    if fmt in ("JPEG", "JPG"):
+        save_kwargs = {"quality": 95, "optimize": True}
+        if sharpened.mode == "RGBA":
+            sharpened = sharpened.convert("RGB")
+
+    sharpened.save(output_path, **save_kwargs)
+    return output_path
