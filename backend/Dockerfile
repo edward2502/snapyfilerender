@@ -1,9 +1,10 @@
 FROM python:3.12-slim
 
-# Install LibreOffice (writer for docx, calc for xlsx, headless)
+# Install LibreOffice (writer for docx, calc for xlsx, impress for pptx, headless)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libreoffice-writer \
     libreoffice-calc \
+    libreoffice-impress \
     libreoffice-core \
     fonts-dejavu \
     fonts-liberation \

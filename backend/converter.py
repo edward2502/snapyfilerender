@@ -555,3 +555,114 @@ def upscale_image(input_path: str, output_path: str, scale_factor: float = 2.0) 
 
     sharpened.save(output_path, **save_kwargs)
     return output_path
+
+
+def pptx_to_pdf(input_path: str, output_path: str) -> str:
+    """Convert a PowerPoint file to PDF using the same LibreOffice engine
+    already used for Word and Excel."""
+    return _office_to_pdf(input_path, output_path)
+
+
+def pdf_to_pptx(input_path: str, output_path: str, dpi: int = 150) -> str:
+    """Convert a PDF into a PowerPoint file by rendering each page as a
+    high-resolution image and placing one image per slide, sized to fill
+    the slide exactly.
+
+    Note: this produces a visually faithful presentation that opens and
+    presents correctly in PowerPoint/Google Slides, but the text on each
+    slide is NOT selectable or editable - each slide is really a picture.
+    There is no reliable way to reconstruct genuinely editable text boxes
+    and shapes from an arbitrary PDF's layout; every converter that claims
+    to do this either produces exactly this kind of image-based result
+    under the hood, or badly mangles complex layouts trying to guess at
+    "real" shapes."""
+    import fitz
+    from pptx import Presentation
+    from pptx.util import Emu
+
+    doc = fitz.open(input_path)
+    if doc.page_count == 0:
+        raise ValueError("This PDF has no pages.")
+
+    prs = Presentation()
+    # EMU (English Metric Units) - the unit python-pptx uses for sizing
+    EMU_PER_INCH = 914400
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        blank_layout = prs.slide_layouts[6]  # fully blank layout
+
+        for i, page in enumerate(doc):
+            pix = page.get_pixmap(dpi=dpi)
+            img_path = os.path.join(tmpdir, f"page_{i}.png")
+            pix.save(img_path)
+
+            page_width_in = page.rect.width / 72  # PDF points -> inches
+            page_height_in = page.rect.height / 72
+
+            if i == 0:
+                prs.slide_width = Emu(int(page_width_in * EMU_PER_INCH))
+                prs.slide_height = Emu(int(page_height_in * EMU_PER_INCH))
+
+            slide = prs.slides.add_slide(blank_layout)
+            slide.shapes.add_picture(
+                img_path, 0, 0,
+                width=prs.slide_width, height=prs.slide_height,
+            )
+
+        prs.save(output_path)
+
+    doc.close()
+    return output_path
+
+
+def powerpoint_to_pdf(input_path: str, output_path: str) -> str:
+    """Convert a .pptx to .pdf using the same LibreOffice engine as
+    Word/Excel conversion."""
+    return _office_to_pdf(input_path, output_path)
+
+
+def pdf_to_powerpoint(input_path: str, output_path: str, dpi: int = 150) -> str:
+    """Convert a PDF into a .pptx, one slide per page.
+
+    Honesty note: LibreOffice has no PDF->PPTX export filter at all, and
+    there is no reliable way to reconstruct fully editable text boxes
+    from an arbitrary PDF's layout. This renders each page as a
+    high-quality image and places it as a full-slide picture - visually
+    identical to the original, but the text on each slide is not
+    editable. This is the same practical tradeoff most PDF-to-PowerPoint
+    tools make under the hood for anything beyond simple text PDFs.
+    """
+    import tempfile
+    from pptx import Presentation
+    from pptx.util import Emu
+    from PIL import Image
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        image_paths = pdf_to_images(input_path, tmpdir, dpi=dpi)
+
+        prs = Presentation()
+        prs.slide_width = Emu(12192000)   # 16:9 widescreen
+        prs.slide_height = Emu(6858000)
+        blank_layout = prs.slide_layouts[6]
+
+        for img_path in image_paths:
+            slide = prs.slides.add_slide(blank_layout)
+            img = Image.open(img_path)
+            img_w, img_h = img.size
+            aspect = img_w / img_h
+            slide_aspect = prs.slide_width / prs.slide_height
+
+            if aspect > slide_aspect:
+                w = prs.slide_width
+                h = int(w / aspect)
+            else:
+                h = prs.slide_height
+                w = int(h * aspect)
+
+            left = (prs.slide_width - w) // 2
+            top = (prs.slide_height - h) // 2
+            slide.shapes.add_picture(img_path, left, top, width=w, height=h)
+
+        prs.save(output_path)
+
+    return output_path

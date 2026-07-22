@@ -18,6 +18,8 @@ Endpoints:
   POST /api/pdf-to-img    - upload a .pdf + optional dpi form field, get back a .zip of one PNG per page
   POST /api/compress-img  - upload an image + optional quality/max_dimension form fields, get back a smaller .jpg
   POST /api/upscale-img   - upload an image + optional scale_factor form field (default 2.0, max 4.0), get back a larger image
+  POST /api/ppt-to-pdf    - upload a .pptx, get back a .pdf
+  POST /api/pdf-to-ppt    - upload a .pdf + optional dpi form field, get back a .pptx (one image-slide per page)
   GET  /api/health        - health check
 
 Chat with PDF requires a GEMINI_API_KEY environment variable set on the
@@ -46,6 +48,7 @@ from converter import (
     unlock_pdf, protect_pdf, watermark_pdf,
     generate_qr_code, extract_pdf_text, chat_with_pdf,
     images_to_pdf, pdf_to_images, compress_image, upscale_image,
+    pptx_to_pdf, pdf_to_pptx,
 )
 
 APP_TMP_DIR = Path(os.environ.get("CONVERTER_TMP_DIR", "/tmp/converter_jobs"))
@@ -570,5 +573,61 @@ async def upscale_img_endpoint(
     media_type = "image/jpeg" if ext.lower() in (".jpg", ".jpeg") else "image/png"
     return FileResponse(
         output_path, media_type=media_type, filename=download_name,
+        background=background_tasks,
+    )
+
+
+@app.post("/api/ppt-to-pdf")
+async def ppt_to_pdf_endpoint(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+    if not file.filename.lower().endswith(".pptx"):
+        raise HTTPException(400, "Please upload a .pptx file.")
+
+    job_dir = make_job_dir()
+    input_path = job_dir / "input.pptx"
+    output_path = job_dir / "output.pdf"
+
+    await save_upload(file, input_path)
+
+    try:
+        pptx_to_pdf(str(input_path), str(output_path))
+    except Exception as e:
+        cleanup_job_dir(job_dir)
+        raise HTTPException(500, f"Conversion failed: {e}")
+
+    background_tasks.add_task(cleanup_job_dir, job_dir)
+    download_name = os.path.splitext(file.filename)[0] + ".pdf"
+    return FileResponse(
+        output_path, media_type="application/pdf", filename=download_name,
+        background=background_tasks,
+    )
+
+
+@app.post("/api/pdf-to-ppt")
+async def pdf_to_ppt_endpoint(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    dpi: int = Form(150),
+):
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(400, "Please upload a .pdf file.")
+
+    job_dir = make_job_dir()
+    input_path = job_dir / "input.pdf"
+    output_path = job_dir / "output.pptx"
+
+    await save_upload(file, input_path)
+
+    try:
+        pdf_to_pptx(str(input_path), str(output_path), dpi=dpi)
+    except Exception as e:
+        cleanup_job_dir(job_dir)
+        raise HTTPException(500, f"Conversion failed: {e}")
+
+    background_tasks.add_task(cleanup_job_dir, job_dir)
+    download_name = os.path.splitext(file.filename)[0] + ".pptx"
+    return FileResponse(
+        output_path,
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        filename=download_name,
         background=background_tasks,
     )
