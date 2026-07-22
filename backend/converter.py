@@ -666,3 +666,373 @@ def pdf_to_powerpoint(input_path: str, output_path: str, dpi: int = 150) -> str:
         prs.save(output_path)
 
     return output_path
+
+
+# ---------------------------------------------------------------------------
+# Newer PDF tools: remove/organize/extract pages, scan (OCR), repair,
+# html->pdf, page numbers, crop, translate, pdf->markdown, redact.
+# ---------------------------------------------------------------------------
+
+def remove_pages(input_path: str, output_path: str, pages_to_remove: list) -> str:
+    """Delete the given pages (1-indexed) and keep the rest, in order."""
+    from pypdf import PdfReader, PdfWriter
+
+    if not pages_to_remove:
+        raise ValueError("Please specify at least one page to remove.")
+
+    reader = PdfReader(input_path)
+    total_pages = len(reader.pages)
+    remove_set = set()
+    for p in pages_to_remove:
+        if p < 1 or p > total_pages:
+            raise ValueError(f"Page {p} is out of range - this PDF has {total_pages} page(s).")
+        remove_set.add(p)
+
+    if len(remove_set) == total_pages:
+        raise ValueError("Cannot remove every page from the PDF.")
+
+    writer = PdfWriter()
+    for i, page in enumerate(reader.pages, start=1):
+        if i not in remove_set:
+            writer.add_page(page)
+
+    with open(output_path, "wb") as f:
+        writer.write(f)
+    return output_path
+
+
+def organize_pdf(input_path: str, output_path: str, page_order: list) -> str:
+    """Rebuild a PDF using an explicit new page order (1-indexed). Pages
+    can be reordered, dropped (by omitting them), or repeated - this
+    powers a drag-and-drop 'Organize PDF' UI where the user rearranges
+    page thumbnails and/or deletes some."""
+    from pypdf import PdfReader, PdfWriter
+
+    if not page_order:
+        raise ValueError("Please provide the new page order.")
+
+    reader = PdfReader(input_path)
+    total_pages = len(reader.pages)
+
+    writer = PdfWriter()
+    for p in page_order:
+        if p < 1 or p > total_pages:
+            raise ValueError(f"Page {p} is out of range - this PDF has {total_pages} page(s).")
+        writer.add_page(reader.pages[p - 1])
+
+    with open(output_path, "wb") as f:
+        writer.write(f)
+    return output_path
+
+
+def extract_pages(input_path: str, output_path: str, pages: list) -> str:
+    """Pull out an arbitrary set of pages (1-indexed, any order,
+    duplicates allowed) into a new PDF."""
+    from pypdf import PdfReader, PdfWriter
+
+    if not pages:
+        raise ValueError("Please specify at least one page to extract.")
+
+    reader = PdfReader(input_path)
+    total_pages = len(reader.pages)
+
+    writer = PdfWriter()
+    for p in pages:
+        if p < 1 or p > total_pages:
+            raise ValueError(f"Page {p} is out of range - this PDF has {total_pages} page(s).")
+        writer.add_page(reader.pages[p - 1])
+
+    with open(output_path, "wb") as f:
+        writer.write(f)
+    return output_path
+
+
+def repair_pdf(input_path: str, output_path: str) -> str:
+    """Attempt to fix a corrupted or malformed PDF by re-parsing it with
+    pikepdf (built on qpdf, which repairs broken cross-reference tables,
+    broken object streams, and other structural issues) and writing out
+    a clean copy."""
+    import pikepdf
+
+    try:
+        pdf = pikepdf.open(input_path)
+    except Exception as e:
+        raise ValueError(f"This PDF is too damaged to repair automatically: {e}")
+
+    pdf.save(output_path)
+    pdf.close()
+    return output_path
+
+
+def html_to_pdf(input_path: str, output_path: str) -> str:
+    """Convert an HTML file to PDF using the same LibreOffice engine used
+    for Word/Excel/PowerPoint conversion."""
+    return _office_to_pdf(input_path, output_path)
+
+
+def add_page_numbers(
+    input_path: str,
+    output_path: str,
+    position: str = "bottom-center",
+    start_at: int = 1,
+    font_size: int = 11,
+) -> str:
+    """Stamp a page number onto every page of a PDF."""
+    import io
+    from pypdf import PdfReader, PdfWriter
+    from reportlab.pdfgen import canvas
+
+    valid_positions = {
+        "bottom-center", "bottom-left", "bottom-right",
+        "top-center", "top-left", "top-right",
+    }
+    if position not in valid_positions:
+        raise ValueError(f"Position must be one of: {', '.join(sorted(valid_positions))}")
+
+    reader = PdfReader(input_path)
+    writer = PdfWriter()
+
+    for i, page in enumerate(reader.pages):
+        page_width = float(page.mediabox.width)
+        page_height = float(page.mediabox.height)
+        number = start_at + i
+
+        buf = io.BytesIO()
+        c = canvas.Canvas(buf, pagesize=(page_width, page_height))
+        c.setFont("Helvetica", font_size)
+        margin = 24
+        label = str(number)
+
+        y = margin if "bottom" in position else page_height - margin
+
+        if "center" in position:
+            c.drawCentredString(page_width / 2, y, label)
+        elif "left" in position:
+            c.drawString(margin, y, label)
+        else:
+            c.drawRightString(page_width - margin, y, label)
+
+        c.save()
+        buf.seek(0)
+
+        overlay_reader = PdfReader(buf)
+        page.merge_page(overlay_reader.pages[0])
+        writer.add_page(page)
+
+    with open(output_path, "wb") as f:
+        writer.write(f)
+    return output_path
+
+
+def crop_pdf(input_path: str, output_path: str, left: float = 0, top: float = 0, right: float = 0, bottom: float = 0) -> str:
+    """Trim a fixed margin (in points - 72pt = 1 inch) off each side of
+    every page."""
+    from pypdf import PdfReader, PdfWriter
+    from pypdf.generic import RectangleObject
+
+    if any(m < 0 for m in (left, top, right, bottom)):
+        raise ValueError("Margins cannot be negative.")
+
+    reader = PdfReader(input_path)
+    writer = PdfWriter()
+
+    for page in reader.pages:
+        box = page.mediabox
+        new_left = float(box.left) + left
+        new_bottom = float(box.bottom) + bottom
+        new_right = float(box.right) - right
+        new_top = float(box.top) - top
+
+        if new_right <= new_left or new_top <= new_bottom:
+            raise ValueError("Crop margins are too large for this page size.")
+
+        rect = RectangleObject((new_left, new_bottom, new_right, new_top))
+        page.mediabox = rect
+        page.cropbox = rect
+        writer.add_page(page)
+
+    with open(output_path, "wb") as f:
+        writer.write(f)
+    return output_path
+
+
+def translate_pdf(input_path: str, output_path: str, target_language: str, api_key: str) -> str:
+    """Extract a PDF's text, translate it into the target language using
+    Gemini, and lay the translation out as a new PDF."""
+    from google import genai
+    from reportlab.lib.pagesizes import A4
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import inch
+    from xml.sax.saxutils import escape
+
+    if not target_language or not target_language.strip():
+        raise ValueError("Target language is required.")
+    if not api_key:
+        raise RuntimeError("No Gemini API key configured on the server (GEMINI_API_KEY env var missing).")
+
+    document_text = extract_pdf_text(input_path, max_chars=100_000)
+
+    client = genai.Client(api_key=api_key)
+    prompt = (
+        f"Translate the following document text into {target_language}. "
+        "Preserve paragraph breaks. Only output the translated text, "
+        "nothing else - no notes, no commentary, no markdown.\n\n"
+        f"{document_text}"
+    )
+    response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+    translated_text = (response.text or "").strip()
+
+    if not translated_text:
+        raise RuntimeError("Translation failed - no text was returned.")
+
+    styles = getSampleStyleSheet()
+    doc = SimpleDocTemplate(
+        output_path, pagesize=A4,
+        leftMargin=0.9 * inch, rightMargin=0.9 * inch,
+        topMargin=0.9 * inch, bottomMargin=0.9 * inch,
+    )
+    story = []
+    for para in translated_text.split("\n\n"):
+        para = para.strip()
+        if not para:
+            continue
+        safe = escape(para).replace("\n", "<br/>")
+        story.append(Paragraph(safe, styles["Normal"]))
+        story.append(Spacer(1, 10))
+
+    if not story:
+        raise RuntimeError("Nothing to render after translation.")
+
+    doc.build(story)
+    return output_path
+
+
+def pdf_to_markdown(input_path: str, output_path: str) -> str:
+    """Convert a PDF's text content into a Markdown file, one section per
+    page. This is a straightforward text extraction, not a full layout
+    reconstruction - tables/images are not preserved as Markdown tables
+    or embedded images."""
+    import pdfplumber
+
+    lines = []
+    with pdfplumber.open(input_path) as pdf:
+        for i, page in enumerate(pdf.pages, start=1):
+            text = (page.extract_text() or "").strip()
+            lines.append(f"## Page {i}\n")
+            lines.append(text if text else "*[No extractable text on this page]*")
+            lines.append("\n")
+
+    markdown = "\n".join(lines).strip() + "\n"
+    if not markdown.strip():
+        raise ValueError("No extractable text found in this PDF.")
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(markdown)
+    return output_path
+
+
+def redact_pdf(input_path: str, output_path: str, terms: list) -> str:
+    """Permanently black out every occurrence of the given search terms.
+    Uses PyMuPDF's redaction annotations, which remove the underlying
+    text and image content beneath the box - not just draw a black
+    rectangle on top of it - so the redacted text cannot be recovered
+    by copy-pasting or re-extracting."""
+    import fitz
+
+    clean_terms = [t.strip() for t in terms if t and t.strip()]
+    if not clean_terms:
+        raise ValueError("Please provide at least one word or phrase to redact.")
+
+    doc = fitz.open(input_path)
+    if doc.page_count == 0:
+        raise ValueError("This PDF has no pages.")
+
+    match_count = 0
+    for page in doc:
+        for term in clean_terms:
+            instances = page.search_for(term)
+            for inst in instances:
+                page.add_redact_annot(inst, fill=(0, 0, 0))
+                match_count += 1
+        page.apply_redactions()
+
+    if match_count == 0:
+        doc.close()
+        raise ValueError("None of the given terms were found in this PDF.")
+
+    doc.save(output_path)
+    doc.close()
+    return output_path
+
+
+def scan_pdf(input_path: str, output_path: str, language: str = "eng", dpi: int = 300) -> str:
+    """OCR a scanned/image-only PDF and add an invisible, searchable text
+    layer on top of the original page images - the pages still look
+    identical, but the text can now be selected, copy-pasted, and
+    searched. Requires the Tesseract OCR engine to be installed on the
+    server (apt package tesseract-ocr)."""
+    import io
+    import fitz
+    from PIL import Image
+    from pypdf import PdfReader, PdfWriter
+    from reportlab.pdfgen import canvas
+
+    try:
+        import pytesseract
+        from pytesseract import Output
+    except ImportError:
+        raise RuntimeError("OCR support (pytesseract) is not installed on this server.")
+
+    doc = fitz.open(input_path)
+    if doc.page_count == 0:
+        raise ValueError("This PDF has no pages.")
+
+    reader = PdfReader(input_path)
+    writer = PdfWriter()
+
+    for i, fitz_page in enumerate(doc):
+        pix = fitz_page.get_pixmap(dpi=dpi)
+        pil_img = Image.open(io.BytesIO(pix.tobytes("png")))
+
+        try:
+            ocr_data = pytesseract.image_to_data(pil_img, lang=language, output_type=Output.DICT)
+        except pytesseract.TesseractNotFoundError:
+            raise RuntimeError("OCR engine (Tesseract) is not installed on this server.")
+
+        pdf_page = reader.pages[i]
+        page_width = float(pdf_page.mediabox.width)
+        page_height = float(pdf_page.mediabox.height)
+        scale_x = page_width / pix.width
+        scale_y = page_height / pix.height
+
+        buf = io.BytesIO()
+        c = canvas.Canvas(buf, pagesize=(page_width, page_height))
+        n_boxes = len(ocr_data["text"])
+        for j in range(n_boxes):
+            word = ocr_data["text"][j].strip()
+            if not word:
+                continue
+            x, y, w, h = (ocr_data["left"][j], ocr_data["top"][j],
+                          ocr_data["width"][j], ocr_data["height"][j])
+            pdf_x = x * scale_x
+            pdf_y = page_height - (y + h) * scale_y  # flip y-axis (image top-down -> PDF bottom-up)
+            font_size = max(4, h * scale_y)
+
+            text_obj = c.beginText(pdf_x, pdf_y)
+            text_obj.setFont("Helvetica", font_size)
+            text_obj.setTextRenderMode(3)  # invisible - present for search/copy, not drawn
+            text_obj.textOut(word)
+            c.drawText(text_obj)
+
+        c.save()
+        buf.seek(0)
+
+        overlay_reader = PdfReader(buf)
+        pdf_page.merge_page(overlay_reader.pages[0])
+        writer.add_page(pdf_page)
+
+    doc.close()
+    with open(output_path, "wb") as f:
+        writer.write(f)
+    return output_path

@@ -14,3 +14,4 @@ qrcode==8.0
 google-genai==2.12.1
 pymupdf==1.28.0
 python-pptx==1.0.2
+pytesseract==0.3.13
